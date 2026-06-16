@@ -1,179 +1,212 @@
 # -*- coding: utf-8 -*-
-from app.BinanceAPI import BinanceAPI
-from app.authorization import api_key,api_secret
-import os,json
-binan = BinanceAPI(api_key,api_secret)
-# linux
-data_path = os.getcwd()+"/data/data.json"
-# windows
-# data_path = os.getcwd() + "\data\data.json"
+"""
+币种状态持久化模块
+==================
 
-class RunBetData:
+负责 data.json 的读写，**仅存储持仓状态与策略配置**。
+不再保存"买入触发价/卖出触发价"——这些由 strategy 实时计算。
 
-    def _get_json_data(self):
-        '''读取json文件'''
-        tmp_json = {}
-        with open(data_path, 'r') as f:
-            tmp_json = json.load(f)
-            f.close()
-        return tmp_json
+存储结构：
+    {
+        "coinList": ["WLDUSDT", ...],
+        "WLDUSDT": {
+            "benchmark": "USDT",
+            "chain": "Binance",
+            "state": {
+                "strategy":     "grid",     # 策略名（来自 strategy.registry）
+                "params":       {...},      # 策略参数
+                "step":         0,          # 当前持仓步数
+                "last_buy_price": 0.0,      # 最近一次买入价
+                "recorded_prices": []       # 历史买入价（用于多层持仓）
+            }
+        }
+    }
+"""
 
+from __future__ import annotations
 
-    def _modify_json_data(self,data):
-        '''修改json文件'''
-        with open(data_path, "w") as f:
-            f.write(json.dumps(data, indent=4))
-        f.close()
+import json
+import logging
+import tempfile
+from pathlib import Path
+from typing import Any
 
+logger = logging.getLogger(__name__)
 
-    ####------下面为输出函数--------####
+DATA_PATH: Path = Path(__file__).parent / "data.json"
 
-    def get_coinList(self):
-        data_json = self._get_json_data()
-        return data_json["coinList"]
-    
-    def get_buy_price(self,symbol):
-        data_json = self._get_json_data()
-        return data_json[symbol]["runBet"]["next_buy_price"]
-
-
-    def get_sell_price(self,symbol):
-        data_json = self._get_json_data()
-        return data_json[symbol]["runBet"]["grid_sell_price"]
-
-    def get_cointype(self,symbol):
-        data_json = self._get_json_data()
-        return data_json[symbol]["config"]["cointype"]
-
-    def get_record_price(self,symbol):
-        '''卖出后，step减一后，再读取上次买入的价格'''
-        data_json = self._get_json_data()
-        cur_step = self.get_step(symbol) - 1
-        return data_json[symbol]['runBet']['recorded_price'][cur_step]
-
-    def get_quantity(self,symbol,exchange_method=True):
-        '''
-        :param exchange: True 代表买入，取买入的仓位 False：代表卖出，取卖出应该的仓位
-        :return:
-        '''
-
-        data_json = self._get_json_data()
-        cur_step = data_json[symbol]["runBet"]["step"] if exchange_method else data_json[symbol]["runBet"]["step"] - 1 # 买入与卖出操作对应的仓位不同
-        quantity_arr = data_json[symbol]["config"]["quantity"]
-
-        quantity = None
-        if cur_step < len(quantity_arr): # 当前仓位 > 设置的仓位 取最后一位
-            quantity = quantity_arr[0] if cur_step == 0 else quantity_arr[cur_step]
-        else:
-            quantity = quantity_arr[-1]
-        return quantity
-
-    def get_step(self,symbol):
-        data_json = self._get_json_data()
-        return data_json[symbol]["runBet"]["step"]
-
-    def remove_record_price(self,symbol):
-        '''记录交易价格'''
-        data_json = self._get_json_data()
-        del data_json[symbol]['runBet']['recorded_price'][-1]
-        self._modify_json_data(data_json)
+DEFAULT_STATE: dict[str, Any] = {
+    "strategy": "grid",
+    "params": {
+        "profit_ratio": 5.0,
+        "double_throw_ratio": 5.0,
+        "stop_loss_ratio": 6.0,
+        "quantity": 9.1,
+    },
+    "step": 0,
+    "last_buy_price": 0.0,
+    "recorded_prices": [],
+}
 
 
-    def get_profit_ratio(self,symbol):
-        '''获取补仓比率'''
-        data_json = self._get_json_data()
-        return data_json[symbol]['config']['profit_ratio']
+class DataStore:
+    """
+    币种状态持久化（线程安全：单例 + 原子写入）
+    """
+    def __init__(self, data_path: Path | None = None) -> None:
+        self._path: Path = data_path or DATA_PATH
 
-    def get_double_throw_ratio(self,symbol):
-        '''获取止盈比率'''
-        data_json = self._get_json_data()
-        return data_json[symbol]['config']['double_throw_ratio']
+    # ----------------------------------------------------------
+    # 文件 I/O
+    # ----------------------------------------------------------
 
-    def get_stop_loss_ratio(self,symbol):
-        '''获取止损比率'''
-        data_json = self._get_json_data()
-        return data_json[symbol]['config'].get('stop_loss_ratio', 5.0)
+    def _load(self) -> dict:
+        with open(self._path, "r", encoding="utf-8") as f:
+            return json.load(f)
 
-    def get_stop_loss_price(self,symbol):
-        '''计算止损价格 = 买入价格 * (1 - 止损比率)'''
-        data_json = self._get_json_data()
-        cur_step = self.get_step(symbol) - 1
-        if cur_step < 0 or cur_step >= len(data_json[symbol]['runBet']['recorded_price']):
-            return None
-        buy_price = data_json[symbol]['runBet']['recorded_price'][cur_step]
-        stop_loss_ratio = self.get_stop_loss_ratio(symbol)
-        return round(buy_price * (1 - stop_loss_ratio / 100), 6)
+    def _save(self, data: dict) -> None:
+        tmp = self._path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        tmp.replace(self._path)
+        logger.debug("已保存到 %s", self._path)
 
-    def check_stop_loss(self,symbol, current_price):
-        '''检查是否触发止损条件'''
-        stop_loss_price = self.get_stop_loss_price(symbol)
-        if stop_loss_price is None:
-            return False, None
-        if current_price <= stop_loss_price:
-            return True, stop_loss_price
-        return False, stop_loss_price
+    # ----------------------------------------------------------
+    # 币种列表
+    # ----------------------------------------------------------
 
-    def set_record_price(self,symbol,value):
-        '''记录交易价格'''
-        data_json = self._get_json_data()
-        data_json[symbol]['runBet']['recorded_price'].append(value)
-        self._modify_json_data(data_json)
+    def get_coin_list(self) -> list[str]:
+        try:
+            return list(self._load().get("coinList", []))
+        except Exception as exc:
+            logger.error("读取 coinList 失败: %s", exc)
+            return []
 
-    def is_alpha_token(self, symbol):
-        '''判断是否为Alpha代币'''
-        return symbol.startswith("ALPHA_")
-    
-    def get_benchmark(self, symbol):
-        '''获取交易对的基准币'''
-        data_json = self._get_json_data()
-        return data_json[symbol].get('benchmark', 'USDT')
-    
-    def get_chain(self, symbol):
-        '''获取交易对所在链'''
-        data_json = self._get_json_data()
-        return data_json[symbol].get('chain', 'Binance')
-    
-    def get_atr(self,symbol,interval='4h',kline_num=20):
-        '''获取ATR值，支持Alpha代币'''
-        if self.is_alpha_token(symbol):
-            data = binan.get_alpha_klines(symbol, interval, kline_num)
-        else:
-            data = binan.get_klines(symbol, interval, kline_num)
-        
-        percent_total = 0
-        for i in range(len(data)):
-            percent_total = abs(float(data[i][3]) - float(data[i][2])) / float(data[i][4]) + percent_total
+    def add_coin(
+        self,
+        symbol: str,
+        benchmark: str = "USDT",
+        chain: str = "Binance",
+        strategy_name: str = "grid",
+        params: dict | None = None,
+    ) -> None:
+        """
+        **添加新币种**到监控列表
 
-        return round(percent_total/kline_num * 100 / (10/1.2), 1)
+        若币种已存在则跳过。
+        """
+        symbol = symbol.upper().strip()
+        if not symbol:
+            raise ValueError("symbol 不能为空")
+        data = self._load()
+        if symbol in data.get("coinList", []):
+            logger.info("%s 已在监控列表中，跳过添加", symbol)
+            return
 
-    def set_ratio(self,symbol):
-        '''修改补仓止盈比率'''
-        data_json = self._get_json_data()
-        atr_value = self.get_atr(symbol)
-        data_json[symbol]['config']['double_throw_ratio'] = atr_value
-        data_json[symbol]['config']['profit_ratio'] = atr_value
-        self._modify_json_data(data_json)
+        data.setdefault("coinList", []).append(symbol)
+        data[symbol] = {
+            "benchmark": benchmark,
+            "chain": chain,
+            "state": {
+                **DEFAULT_STATE,
+                "strategy": strategy_name,
+                "params": {**DEFAULT_STATE["params"], **(params or {})},
+                "recorded_prices": [],
+            },
+        }
+        self._save(data)
+        logger.info("已添加币种: %s (策略=%s)", symbol, strategy_name)
 
+    def remove_coin(self, symbol: str) -> None:
+        """从监控列表中移除币种"""
+        symbol = symbol.upper().strip()
+        data = self._load()
+        coins = data.get("coinList", [])
+        if symbol in coins:
+            coins.remove(symbol)
+        data.pop(symbol, None)
+        self._save(data)
+        logger.info("已移除币种: %s", symbol)
 
-    # 买入后，修改 补仓价格 和 网格平仓价格以及步数
-    def modify_price(self,symbol, deal_price,step,market_price):
-        data_json = self._get_json_data()
-        data_json[symbol]["runBet"]["next_buy_price"] = round(deal_price * (1 - data_json[symbol]["config"]["double_throw_ratio"] / 100), 6) # 默认保留6位小数
-        data_json[symbol]["runBet"]["grid_sell_price"] = round(deal_price * (1 + data_json[symbol]["config"]["profit_ratio"] / 100), 6)
-        #  如果修改的价格满足立刻卖出则，再次更改
-        if data_json[symbol]["runBet"]["next_buy_price"] > market_price:
-            data_json[symbol]["runBet"]["next_buy_price"] = round( market_price * (1 - data_json[symbol]["config"]["double_throw_ratio"] / 100), 6)
-        elif data_json[symbol]["runBet"]["grid_sell_price"] < market_price:
-            data_json[symbol]["runBet"]["grid_sell_price"] = round(market_price * (1 + data_json[symbol]["config"]["profit_ratio"] / 100), 6)
+    # ----------------------------------------------------------
+    # 单币种状态读写
+    # ----------------------------------------------------------
 
-        data_json[symbol]["runBet"]["step"] = step
-        self._modify_json_data(data_json)
-        print("修改后的补仓价格为:{double}。修改后的网格价格为:{grid}".format(double=data_json[symbol]["runBet"]["next_buy_price"],
-                                                           grid=data_json[symbol]["runBet"]["grid_sell_price"]))
+    def get_state(self, symbol: str) -> dict:
+        """
+        读取币种状态；若不存在返回默认空仓状态
+        """
+        try:
+            data = self._load()
+            entry = data.get(symbol, {})
+            state = entry.get("state", {})
+            return {
+                "strategy": state.get("strategy", "grid"),
+                "params": dict(state.get("params", {})),
+                "step": int(state.get("step", 0)),
+                "last_buy_price": float(state.get("last_buy_price", 0.0)),
+                "recorded_prices": list(state.get("recorded_prices", [])),
+            }
+        except Exception as exc:
+            logger.error("读取 %s 状态失败: %s", symbol, exc)
+            return {**DEFAULT_STATE, "params": dict(DEFAULT_STATE["params"]),
+                    "recorded_prices": []}
 
+    def update_state(self, symbol: str, **kwargs: Any) -> None:
+        """
+        更新币种状态字段
 
+        示例：data.update_state("WLDUSDT", step=1, last_buy_price=0.55)
+        """
+        data = self._load()
+        if symbol not in data:
+            logger.warning("%s 不在配置中，无法更新", symbol)
+            return
+        state = data[symbol].setdefault("state", {})
+        for k, v in kwargs.items():
+            state[k] = v
+        self._save(data)
 
-if __name__ == "__main__":
-    instance = RunBetData()
-    # print(instance.modify_price(8.87,instance.get_step()-1))
-    print(instance.get_quantity(False))
+    def update_params(self, symbol: str, params: dict) -> None:
+        """更新币种的策略参数"""
+        data = self._load()
+        if symbol not in data:
+            return
+        data[symbol].setdefault("state", {}).setdefault("params", {}).update(params)
+        self._save(data)
+
+    def switch_strategy(self, symbol: str, strategy_name: str,
+                        params: dict | None = None) -> None:
+        """切换币种的策略"""
+        data = self._load()
+        if symbol not in data:
+            return
+        state = data[symbol].setdefault("state", {})
+        state["strategy"] = strategy_name
+        if params:
+            state.setdefault("params", {}).update(params)
+        self._save(data)
+
+    # ----------------------------------------------------------
+    # 交易后状态更新（便捷方法）
+    # ----------------------------------------------------------
+
+    def record_buy(self, symbol: str, fill_price: float) -> None:
+        """记录买入成交：步数 +1，记录价格"""
+        state = self.get_state(symbol)
+        state["step"] += 1
+        state["last_buy_price"] = fill_price
+        state["recorded_prices"].append(fill_price)
+        self.update_state(symbol, **state)
+
+    def record_sell(self, symbol: str) -> None:
+        """记录卖出成交：步数 -1，移除最近买入记录"""
+        state = self.get_state(symbol)
+        if state["step"] > 0:
+            state["step"] -= 1
+        if state["recorded_prices"]:
+            state["recorded_prices"].pop()
+        state["last_buy_price"] = (
+            state["recorded_prices"][-1] if state["recorded_prices"] else 0.0
+        )
+        self.update_state(symbol, **state)

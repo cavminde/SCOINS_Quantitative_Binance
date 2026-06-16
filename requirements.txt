@@ -1,0 +1,18 @@
+# ============================================================
+# Binance 网格交易系统 - 依赖包
+# ============================================================
+# 安装方式: pip install -r requirements.txt
+# ============================================================
+
+# HTTP 请求（Binance API 调用）
+requests>=2.28.0
+
+# 数据类支持（Python 3.7+ 内置，此处记录最低版本要求）
+# dataclasses  (Python 3.7+ 内置)
+# typing       (Python 3.5+ 内置)
+# enum         (Python 3.4+ 内置)
+# pathlib      (Python 3.4+ 内置)
+
+# 说明：
+# - Tkinter 一般随 Python 安装（Windows/macOS 默认包含）
+# - Linux 服务器如缺少 Tkinter 可运行纯命令行模式: python run.py --no-gui

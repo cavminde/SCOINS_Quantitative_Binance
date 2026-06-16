@@ -1,14 +1,41 @@
-# Get an Key and Secret
-# https://www.binance.com/restapipub.html
+# -*- coding: utf-8 -*-
+"""
+Binance API 密钥配置文件
+=======================
+请在此处填写您的 API Key 和 Secret。
 
-# 主网密钥
-api_key = 'BVMOrMeXFKHGtgF1mEfcbfDIL3GKt4nq7dMdlVIK6QllHDJXhwmPLFnMGZNdNbXj'
-api_secret = 'UcAxl9j8ckDFLJdyOVs28Fr6qMQ7XpiqDfg41kJi1SbwzFA0QhmJZGvXOa64UPoZ'
+获取方式：
+    主网：https://www.binance.com/zh-CN/my/settings/api-management
+    测试网：https://testnet.binance.vision/
 
-# 测试网密钥 - 在 https://testnet.binance.vision/ 注册获取
-testnet_api_key = 'NnANXwSDJVTBgLTgUq5B2lmxIovt2GfiuuRnP7Irq8xOjYUIbLfHAW468HBGG5OQ'
-testnet_api_secret = 'mXCClthzo6LpS7NB1zmSXqeVHqxfvrb4Yq7UkVjrdWx1k9rh2QHsjc1ioWyPF6LI'
+安全提示：
+    1. 切勿将此文件提交到公开仓库
+    2. 建议启用 IP 白名单限制
+    3. 仅开启所需的 API 权限（现货交易 + 读取）
+    4. 定期更换 API 密钥
+"""
 
-recv_window = 5000
+# ============================================================
+# 主网 API 密钥（真实交易环境）
+# 请修改为你的真实密钥，此处为示例占位符
+# ============================================================
+api_key: str = ""
+api_secret: str = ""
 
-dingding_token = "6bf58bc66724a526d4d87c88697c821907a82a9da8b676f69d4144bb52dc9ee9"
+# ============================================================
+# 测试网 API 密钥（模拟交易环境，用于开发调试）
+# 在 https://testnet.binance.vision/ 使用 GitHub 登录获取
+# ============================================================
+testnet_api_key: str = ""
+testnet_api_secret: str = ""
+
+# ============================================================
+# API 请求配置
+# ============================================================
+recv_window: int = 5000  # 接收窗口（毫秒），用于防止请求重放攻击
+
+# ============================================================
+# 钉钉机器人通知配置
+# 获取方式：钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义
+# ============================================================
+dingding_token: str = "6bf58bc66724a526d4d87c88697c821907a82a9da8b676f69d4144bb52dc9ee9"
